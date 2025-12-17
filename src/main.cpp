@@ -1,53 +1,52 @@
-// #include <MPU9250_WE.h>
+
 // #include <Wire.h>
-// #include <PID_v1.h>
+// #include <Arduino.h>
+// #include <MPU9250_WE.h>
 // #include <WiFi.h>
 // #include <WiFiUdp.h>
 
-// // --- WIFI / UDP SETTINGS ---
-// const char *ssid = "Drone_ESP32";  // Name of the WiFi Network
-// const char *password = "12345678"; // Password (min 8 chars)
+// // ================= WIFI SETTINGS =================
+// const char *ssid = "Drone_ESP32";
+// const char *password = "12345678";
+
 // WiFiUDP udp;
 // const int udpPort = 4210;
-// char packetBuffer[255];            // Buffer to hold incoming packet
+// char packetBuffer[255];
+// unsigned long lastPacketTime = 0;
 
-// // --- PIN DEFINITIONS ---
-// const int FR_PIN = 25;
-// const int FL_PIN = 32;
-// const int BR_PIN = 13;
-// const int BL_PIN = 18;
+// // ================= MOTOR PINS (YOUR CONFIG) =================
+// const int FR_PIN = 32; const int FR_CH = 1;
+// const int FL_PIN = 13; const int FL_CH = 2;
+// const int BR_PIN = 25; const int BR_CH = 3;
+// const int BL_PIN = 18; const int BL_CH = 4;
 
-// // --- PWM CHANNELS ---
-// const int FR_CH = 0;
-// const int FL_CH = 1;
-// const int BR_CH = 2;
-// const int BL_CH = 3;
-
-// // --- PWM SETTINGS ---
-// const int PWM_FREQ = 5000;
+// // ================= PWM SETTINGS =================
+// const int PWM_FREQ = 20000;
 // const int PWM_RES = 8;
 
-// // --- PID VARIABLES ---
-// double pitchInput, pitchOutput, pitchSetpoint;
-// double rollInput, rollOutput, rollSetpoint;
-// // Note: Yaw PID requires magnetometer or gyro integration logic 
-// // not present in the original code, so we will use open-loop Yaw for now.
-// double yawCommand = 0;
+// // ================= TUNING (P-CONTROLLER) =================
+// double Kp = 1.7;
 
-// // --- PID TUNING ---
-// // Adjust these based on flight tests
-// double Kp = 2.0;
-// double Ki = 0.05;
-// double Kd = 1.0;
+// // ================= FILTER VARIABLES (THE FIX) =================
+// // 0.98 means 98% Gyro (Smooth) + 2% Accel (Correction)
+// float alpha = 0.98;
 
-// PID pitchPID(&pitchInput, &pitchOutput, &pitchSetpoint, Kp, Ki, Kd, DIRECT);
-// PID rollPID(&rollInput, &rollOutput, &rollSetpoint, Kp, Ki, Kd, DIRECT);
+// float pitch = 0.0;
+// float roll = 0.0;
+// unsigned long prevTime = 0;
+// xyzFloat gyroOffsets = { 0, 0, 0 }; // Stores calibration data
 
-// MPU9250_WE myMPU9250 = MPU9250_WE();
-
-// // --- FLIGHT VARIABLES ---
+// // ================= FLIGHT VARIABLES =================
 // int baseThrottle = 0;
-// unsigned long lastPacketTime = 0; // For Safety Failsafe
+// float targetPitch = 0;
+// float targetRoll = 0;
+
+// float pitchOutput = 0;
+// float rollOutput = 0;
+
+// MPU9250_WE myMPU9250 = MPU9250_WE(0x68);
+
+// // ================= HELPER FUNCTIONS =================
 
 // void writeMotors(int fl, int fr, int bl, int br) {
 // 	ledcWrite(FL_CH, constrain(fl, 0, 255));
@@ -55,321 +54,404 @@
 // 	ledcWrite(BL_CH, constrain(bl, 0, 255));
 // 	ledcWrite(BR_CH, constrain(br, 0, 255));
 // }
-// void WiFiStationConnected(WiFiEvent_t event, WiFiEventInfo_t info) {
-// 	Serial.println("---------------------------------------");
-// 	Serial.println(">>> NEW DEVICE CONNECTED TO WIFI! <<<");
-// 	Serial.print("MAC Address: ");
-
-// 	// Print the MAC address of the phone that connected
-// 	for (int i = 0; i < 6; i++) {
-// 		Serial.printf("%02X", info.wifi_ap_staconnected.mac[i]);
-// 		if (i < 5) Serial.print(":");
-// 	}
-// 	Serial.println("\n---------------------------------------");
-// }
-
-// // This function runs when a device disconnects
-// void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info) {
-// 	Serial.println("!!! DEVICE DISCONNECTED !!!");
-// }
 
 // void setup() {
 // 	Serial.begin(115200);
 // 	Wire.begin();
 
-// 	// --- MOTOR SETUP ---
-// 	ledcSetup(FR_CH, PWM_FREQ, PWM_RES);
-// 	ledcSetup(FL_CH, PWM_FREQ, PWM_RES);
-// 	ledcSetup(BR_CH, PWM_FREQ, PWM_RES);
-// 	ledcSetup(BL_CH, PWM_FREQ, PWM_RES);
-
-// 	ledcAttachPin(FR_PIN, FR_CH);
-// 	ledcAttachPin(FL_PIN, FL_CH);
-// 	ledcAttachPin(BR_PIN, BR_CH);
-// 	ledcAttachPin(BL_PIN, BL_CH);
+// 	// 1. Motor Setup
+// 	ledcSetup(FR_CH, PWM_FREQ, PWM_RES); ledcAttachPin(FR_PIN, FR_CH);
+// 	ledcSetup(FL_CH, PWM_FREQ, PWM_RES); ledcAttachPin(FL_PIN, FL_CH);
+// 	ledcSetup(BR_CH, PWM_FREQ, PWM_RES); ledcAttachPin(BR_PIN, BR_CH);
+// 	ledcSetup(BL_CH, PWM_FREQ, PWM_RES); ledcAttachPin(BL_PIN, BL_CH);
 // 	writeMotors(0, 0, 0, 0);
 
-// 	// --- WIFI SETUP ---
-// 	Serial.println("Setting up Access Point...");
+// 	// 2. WiFi Setup
+// 	Serial.println("Creating WiFi Network...");
 // 	WiFi.softAP(ssid, password);
-// 	WiFi.onEvent(WiFiStationConnected, ARDUINO_EVENT_WIFI_AP_STACONNECTED);
-// 	WiFi.onEvent(WiFiStationDisconnected, ARDUINO_EVENT_WIFI_AP_STADISCONNECTED);
-
-// 	IPAddress IP = WiFi.softAPIP();
-// 	Serial.print("AP IP address: ");
-// 	Serial.println(IP); // Should be 192.168.4.1
-
 // 	udp.begin(udpPort);
-// 	Serial.println("UDP Listening...");
+// 	Serial.println("UDP Listener Started...");
 
-// 	// --- MPU SETUP ---
+// 	// 3. MPU Setup
 // 	if (!myMPU9250.init()) {
-// 		Serial.println("MPU9250 does not respond");
+// 		Serial.println("❌ MPU Error!");
 // 	}
 // 	else {
-// 		Serial.println("MPU9250 connected");
+// 		Serial.println("✅ MPU Connected.");
 // 	}
 
-// 	Serial.println("Calibrating... Keep Flat!");
-// 	delay(1000);
-// 	myMPU9250.autoOffsets();
-// 	Serial.println("Done!");
+// 	// --- FILTER SETUP (CRITICAL FOR STABILITY) ---
+// 	// Enable Digital Low Pass Filter to remove motor vibration noise
+// 	myMPU9250.enableAccDLPF(true);
+// 	myMPU9250.setAccDLPF(MPU9250_DLPF_6); // Setting 6 = ~5Hz bandwidth (Strong smoothing)
+// 	myMPU9250.enableGyrDLPF();
+// 	myMPU9250.setGyrDLPF(MPU9250_DLPF_6);
 
 // 	myMPU9250.setSampleRateDivider(5);
 // 	myMPU9250.setAccRange(MPU9250_ACC_RANGE_4G);
-// 	myMPU9250.enableAccDLPF(true);
-// 	myMPU9250.setAccDLPF(MPU9250_DLPF_6);
+// 	myMPU9250.setGyrRange(MPU9250_GYRO_RANGE_500);
 
-// 	// --- PID SETUP ---
-// 	pitchPID.SetMode(AUTOMATIC);
-// 	rollPID.SetMode(AUTOMATIC);
-// 	pitchPID.SetOutputLimits(-100, 100);
-// 	rollPID.SetOutputLimits(-100, 100);
-// 	pitchPID.SetSampleTime(10);
-// 	rollPID.SetSampleTime(10);
-// }
-// void loop() {
-// 	Serial.println("Looping...");
+// 	// 4. GYRO CALIBRATION
+// 	Serial.println("--------------------------------");
+// 	Serial.println("CALIBRATING GYRO... KEEP STILL!");
 // 	delay(1000);
-// 	// 1. CHECK FOR UDP COMMANDS
+// 	xyzFloat gSum = { 0,0,0 };
+// 	for (int i = 0; i < 500; i++) {
+// 		xyzFloat g = myMPU9250.getGyrValues();
+// 		gSum.x += g.x;
+// 		gSum.y += g.y;
+// 		gSum.z += g.z;
+// 		delay(2);
+// 	}
+// 	gyroOffsets.x = gSum.x / 500.0;
+// 	gyroOffsets.y = gSum.y / 500.0;
+// 	gyroOffsets.z = gSum.z / 500.0;
+
+// 	prevTime = micros(); // Start timer
+// 	Serial.println("READY TO FLY.");
+// 	Serial.println("--------------------------------");
+// }
+
+// void loop() {
+// 	// ================= 1. RECEIVE FLUTTER COMMANDS =================
 // 	int packetSize = udp.parsePacket();
 // 	if (packetSize) {
 // 		int len = udp.read(packetBuffer, 255);
 // 		if (len > 0) {
-// 			packetBuffer[len] = 0; // Null terminate string
-
-// 			// --- PRINT DEBUGGING START ---
-// 			Serial.print("RX Packet: ");
-// 			Serial.println(packetBuffer);
-// 			// --- PRINT DEBUGGING END ---
-
-// 			// Parse String: "throttle,pitch,roll,yaw"
+// 			packetBuffer[len] = 0;
 // 			char *ptr = strtok(packetBuffer, ",");
 // 			if (ptr) {
+// 				// Throttle
 // 				int rawThrottle = atoi(ptr);
-// 				ptr = strtok(NULL, ",");
-// 				int rawPitch = atoi(ptr);
-// 				ptr = strtok(NULL, ",");
-// 				int rawRoll = atoi(ptr);
-// 				ptr = strtok(NULL, ",");
-// 				int rawYaw = atoi(ptr);
-
-// 				// -- Mapping & Scaling --
 // 				baseThrottle = map(rawThrottle, 0, 1023, 0, 255);
 
-// 				// Map Joystick (-100 to 100) to Target Angles (-30 to 30 degrees)
-// 				pitchSetpoint = map(rawPitch, -100, 100, -30, 30);
-// 				rollSetpoint = map(rawRoll, -100, 100, -30, 30);
-// 				yawCommand = map(rawYaw, -100, 100, -50, 50);
+// 				// Pitch (Map -100..100 -> -30..30 deg)
+// 				ptr = strtok(NULL, ",");
+// 				int rawPitch = atoi(ptr);
+// 				targetPitch = map(rawPitch, -100, 100, 30, -30);
+
+// 				// Roll (Map -100..100 -> -30..30 deg)
+// 				ptr = strtok(NULL, ",");
+// 				int rawRoll = atoi(ptr);
+// 				targetRoll = map(rawRoll, -100, 100, 30, -30);
 
 // 				lastPacketTime = millis();
 // 			}
 // 		}
 // 	}
 
-// 	// 2. FAILSAFE (Safety Cutoff)
+// 	// ================= 2. SAFETY FAILSAFE =================
 // 	if (millis() - lastPacketTime > 1000) {
-// 		if (baseThrottle > 0) Serial.println("Failsafe: Signal Lost!");
 // 		baseThrottle = 0;
-// 		pitchSetpoint = 0;
-// 		rollSetpoint = 0;
+// 		targetPitch = 0;
+// 		targetRoll = 0;
 // 	}
 
-// 	// 3. GET SENSOR DATA
-// 	float pitch = myMPU9250.getPitch();
-// 	float roll = myMPU9250.getRoll();
+// 	// ================= 3. COMPLEMENTARY FILTER (NO MORE JITTER) =================
+// 	// Calculate how much time passed since last loop (in seconds)
+// 	unsigned long currTime = micros();
+// 	float dt = (currTime - prevTime) / 1000000.0;
+// 	prevTime = currTime;
 
-// 	// 4. CRASH PROTECTION
+// 	// A. Get Raw Data
+// 	xyzFloat g = myMPU9250.getGyrValues();
+// 	xyzFloat a = myMPU9250.getGValues();
+
+// 	// Subtract Calibration Offsets
+// 	float gyrX = g.x - gyroOffsets.x;
+// 	float gyrY = g.y - gyroOffsets.y;
+
+// 	// B. Calculate Accelerometer Angles (Trigonometry)
+// 	// These are noisy but don't drift
+// 	float accPitch = atan2(a.x, a.z) * 57.296;
+// 	float accRoll = atan2(-a.y, a.z) * 57.296;
+
+// 	// C. Combine!
+// 	// Angle = 0.98 * (OldAngle + GyroChange)  +  0.02 * (AccelAngle)
+// 	pitch = alpha * (pitch + gyrY * dt) + (1.0 - alpha) * accPitch;
+// 	roll = alpha * (roll + gyrX * dt) + (1.0 - alpha) * accRoll;
+
+// 	// ================= 4. CRASH PROTECTION =================
 // 	if (abs(pitch) > 60 || abs(roll) > 60) {
 // 		writeMotors(0, 0, 0, 0);
+// 		baseThrottle = 0;
 // 		return;
 // 	}
 
-// 	// 5. PID CALCULATION
-// 	pitchInput = pitch;
-// 	rollInput = roll;
-// 	pitchPID.Compute();
-// 	rollPID.Compute();
+// 	// ================= 5. P-CONTROLLER CALCULATION =================
+// 	// Compare Filtered Angle to Target Angle
+// 	pitchOutput = (pitch - targetPitch) * Kp;
+// 	rollOutput = (roll - targetRoll) * Kp;
 
-// 	// 6. MOTOR MIXING
-// 	int pwm_FL = baseThrottle - pitchOutput + rollOutput + yawCommand;
-// 	int pwm_FR = baseThrottle - pitchOutput - rollOutput - yawCommand;
-// 	int pwm_BL = baseThrottle + pitchOutput + rollOutput - yawCommand;
-// 	int pwm_BR = baseThrottle + pitchOutput - rollOutput + yawCommand;
+// 	// ================= 6. MOTOR MIXING =================
+// 	// FL: Pitch(+), Roll(-)
+// 	int pwm_FL = baseThrottle - pitchOutput + rollOutput;
+// 	// FR: Pitch(+), Roll(+)
+// 	int pwm_FR = baseThrottle - pitchOutput - rollOutput;
+// 	// BL: Pitch(-), Roll(-)
+// 	int pwm_BL = baseThrottle + pitchOutput + rollOutput;
+// 	// BR: Pitch(-), Roll(+)
+// 	int pwm_BR = baseThrottle + pitchOutput - rollOutput;
 
+// 	// Constrain
+// 	pwm_FL = constrain(pwm_FL, 0, 255);
+// 	pwm_FR = constrain(pwm_FR, 0, 255);
+// 	pwm_BL = constrain(pwm_BL, 0, 255);
+// 	pwm_BR = constrain(pwm_BR, 0, 255);
 
-// 	writeMotors(pwm_FL, pwm_FR, pwm_BL, pwm_BR);
+// 	// ================= 7. ACTUATE =================
+// 	if (baseThrottle > 15) {
+// 		writeMotors(pwm_FL, pwm_FR, pwm_BL, pwm_BR);
+// 	}
+// 	else {
+// 		writeMotors(0, 0, 0, 0);
+// 	}
 
+// 	// ================= 8. DEBUG =================
+// 	static long lastPrint = 0;
+// 	if (millis() - lastPrint > 100) {
+// 		lastPrint = millis();
+// 		// Print Filtered Angles to Serial Plotter to verify smoothness
+// 		Serial.print("Pitch:"); Serial.print(pitch);
+// 		Serial.print(" Roll:"); Serial.print(roll);
+// 		Serial.print(" | FL:"); Serial.print(pwm_FL);
+// 		Serial.print(" FR:"); Serial.print(pwm_FR);
+// 		Serial.print(" BL:"); Serial.print(pwm_BL);
+// 		Serial.print(" BR:"); Serial.println(pwm_BR);
+// 	}
 // }
-
-#include <MPU9250_WE.h>
 #include <Wire.h>
-#include <PID_v1.h>
-// --- PIN DEFINITIONS ---
-// Make sure your MOSFET Gates are connected to these pins
-const int FR_PIN = 25;
-const int FL_PIN = 32;
-const int BR_PIN = 13;
-const int BL_PIN = 18;
-// --- PWM CHANNELS (ESP32 Specific) ---
-const int FR_CH = 0;
-const int FL_CH = 1;
-const int BR_CH = 2;
-const int BL_CH = 3;
-// --- PWM SETTINGS ---
-// 5000 Hz is good for brushed motors + MOSFETs.
-// Too high (20kHz+) might overheat IRLZ44N if gate drive isn't perfect.
-const int PWM_FREQ = 5000;
-const int PWM_RES = 8;     // 8 bit resolution (Values 0-255)
-// --- PID VARIABLES ---
-double pitchInput, pitchOutput, pitchSetpoint;
-double rollInput, rollOutput, rollSetpoint;
-// --- PID TUNING ---
-// STARTING VALUES: P=1.5, I=0.02, D=0.8
-// If it wobbles fast -> Lower P
-// If it drifts -> Increase I
-// If it wobbles slowly -> Increase D
-double Kp = 2;
-double Ki = 0.05;
-double Kd = 0.0;
-// Initialize PID Objects
-PID pitchPID(&pitchInput, &pitchOutput, &pitchSetpoint, Kp, Ki, Kd, DIRECT);
-PID rollPID(&rollInput, &rollOutput, &rollSetpoint, Kp, Ki, Kd, DIRECT);
-// MPU Object
-MPU9250_WE myMPU9250 = MPU9250_WE();
-// --- FLIGHT VARIABLES ---
-// WARNING: 0 = Motors OFF.
-// Set this to ~50 to test stabilization in your hand.
-// Max is 255.
-int baseThrottle = 0;
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+
+// ================= WIFI SETTINGS =================
+const char *ssid = "Drone_ESP32";
+const char *password = "12345678";
+WiFiUDP udp;
+const int udpPort = 4210;
+char packetBuffer[255];
+unsigned long lastPacketTime = 0;
+
+// ================= MOTOR PINS (MATCHING YOUR PCB) =================
+const int FR_PIN = 32; const int FR_CH = 1;
+const int FL_PIN = 13; const int FL_CH = 2;
+const int BR_PIN = 25; const int BR_CH = 3;
+const int BL_PIN = 18; const int BL_CH = 4;
+
+// ================= PWM SETTINGS =================
+const int PWM_FREQ = 20000; // High freq for brushed motors
+const int PWM_RES = 8;      // 0-255 resolution
+
+// ================= PID VARIABLES (From the code you found) =================
+float PAngleRoll = 2; float PAnglePitch = PAngleRoll;
+float IAngleRoll = 0.5; float IAnglePitch = IAngleRoll;
+float DAngleRoll = 0.007; float DAnglePitch = DAngleRoll;
+
+float PRateRoll = 0.625; float IRateRoll = 2.1; float DRateRoll = 0.0088;
+float PRatePitch = PRateRoll; float IRatePitch = IRateRoll; float DRatePitch = DRateRoll;
+float PRateYaw = 4; float IRateYaw = 3; float DRateYaw = 0;
+
+float RateRoll, RatePitch, RateYaw;
+float RateCalibrationRoll, RateCalibrationPitch, RateCalibrationYaw;
+float AccX, AccY, AccZ;
+float AngleRoll, AnglePitch;
+float complementaryAngleRoll = 0.0f;
+float complementaryAnglePitch = 0.0f;
+
+float DesiredAngleRoll, DesiredAnglePitch, DesiredRateYaw;
+float ErrorAngleRoll, ErrorAnglePitch, PrevErrorAngleRoll, PrevErrorAnglePitch;
+float PrevItermAngleRoll, PrevItermAnglePitch;
+float ErrorRateRoll, ErrorRatePitch, ErrorRateYaw;
+float PrevErrorRateRoll, PrevErrorRatePitch, PrevErrorRateYaw;
+float PrevItermRateRoll, PrevItermRatePitch, PrevItermRateYaw;
+
+float InputRoll, InputPitch, InputYaw, InputThrottle;
+uint32_t LoopTimer;
+float t = 0.004; // 250Hz Loop
+
+// ================= HELPER FUNCTIONS =================
+
 void writeMotors(int fl, int fr, int bl, int br) {
-	ledcWrite(FL_CH, fl);
-	ledcWrite(FR_CH, fr);
-	ledcWrite(BL_CH, bl);
-	ledcWrite(BR_CH, br);
+	ledcWrite(FL_CH, constrain(fl, 0, 255));
+	ledcWrite(FR_CH, constrain(fr, 0, 255));
+	ledcWrite(BL_CH, constrain(bl, 0, 255));
+	ledcWrite(BR_CH, constrain(br, 0, 255));
 }
+
+void gyro_signals(void) {
+	Wire.beginTransmission(0x68);
+	Wire.write(0x1A); Wire.write(0x05); Wire.endTransmission();
+	Wire.beginTransmission(0x68);
+	Wire.write(0x1C); Wire.write(0x10); Wire.endTransmission();
+	Wire.beginTransmission(0x68);
+	Wire.write(0x3B); Wire.endTransmission();
+	Wire.requestFrom(0x68, 6);
+	int16_t AccXLSB = Wire.read() << 8 | Wire.read();
+	int16_t AccYLSB = Wire.read() << 8 | Wire.read();
+	int16_t AccZLSB = Wire.read() << 8 | Wire.read();
+	Wire.beginTransmission(0x68);
+	Wire.write(0x1B); Wire.write(0x8); Wire.endTransmission();
+	Wire.beginTransmission(0x68);
+	Wire.write(0x43); Wire.endTransmission();
+	Wire.requestFrom(0x68, 6);
+	int16_t GyroX = Wire.read() << 8 | Wire.read();
+	int16_t GyroY = Wire.read() << 8 | Wire.read();
+	int16_t GyroZ = Wire.read() << 8 | Wire.read();
+
+	RateRoll = (float)GyroX / 65.5;
+	RatePitch = (float)GyroY / 65.5;
+	RateYaw = (float)GyroZ / 65.5;
+	AccX = (float)AccXLSB / 4096;
+	AccY = (float)AccYLSB / 4096;
+	AccZ = (float)AccZLSB / 4096;
+
+	AngleRoll = atan(AccY / sqrt(AccX * AccX + AccZ * AccZ)) * 57.29;
+	AnglePitch = -atan(AccX / sqrt(AccY * AccY + AccZ * AccZ)) * 57.29;
+}
+
 void setup() {
 	Serial.begin(115200);
+	Wire.setClock(400000);
 	Wire.begin();
-	delay(500);
-	Wire.setClock(100000);
-	delay(500);
-	// --- MOTOR PWM SETUP ---
-	ledcSetup(FR_CH, PWM_FREQ, PWM_RES);
-	ledcSetup(FL_CH, PWM_FREQ, PWM_RES);
-	ledcSetup(BR_CH, PWM_FREQ, PWM_RES);
-	ledcSetup(BL_CH, PWM_FREQ, PWM_RES);
+	delay(250);
 
-	ledcAttachPin(FR_PIN, FR_CH);
-	ledcAttachPin(FL_PIN, FL_CH);
-	ledcAttachPin(BR_PIN, BR_CH);
-	ledcAttachPin(BL_PIN, BL_CH);
+	// Wake up MPU
+	Wire.beginTransmission(0x68);
+	Wire.write(0x6B); Wire.write(0x00);
+	Wire.endTransmission();
 
-	// Ensure motors are off
+	// Motor Setup
+	ledcSetup(FR_CH, PWM_FREQ, PWM_RES); ledcAttachPin(FR_PIN, FR_CH);
+	ledcSetup(FL_CH, PWM_FREQ, PWM_RES); ledcAttachPin(FL_PIN, FL_CH);
+	ledcSetup(BR_CH, PWM_FREQ, PWM_RES); ledcAttachPin(BR_PIN, BR_CH);
+	ledcSetup(BL_CH, PWM_FREQ, PWM_RES); ledcAttachPin(BL_PIN, BL_CH);
 	writeMotors(0, 0, 0, 0);
 
-	// --- MPU SETUP ---
-	if (!myMPU9250.init()) {
-		Serial.println("MPU9250 does not respond");
+	// WiFi Setup
+	WiFi.softAP(ssid, password);
+	udp.begin(udpPort);
+
+	// Calibration (Keep drone still on start!)
+	Serial.println("Calibrating...");
+	for (int i = 0; i < 2000; i++) {
+		gyro_signals();
+		RateCalibrationRoll += RateRoll;
+		RateCalibrationPitch += RatePitch;
+		RateCalibrationYaw += RateYaw;
+		delay(1);
 	}
-	else {
-		Serial.println("MPU9250 is connected");
-	}
+	RateCalibrationRoll /= 2000;
+	RateCalibrationPitch /= 2000;
+	RateCalibrationYaw /= 2000;
 
-	// 1. SET SETTINGS FIRST
-	myMPU9250.setSampleRateDivider(5);
-	myMPU9250.setAccRange(MPU9250_ACC_RANGE_4G);
-	myMPU9250.enableAccDLPF(true);
-
-
-	myMPU9250.setAccDLPF(MPU9250_DLPF_6);
-
-	// 2. NOW CALIBRATE
-	Serial.println("Keep flat - Calibrating...");
-	delay(1000);
-	myMPU9250.autoOffsets(); // Calibrate using the settings above
-	Serial.println("Calibration Done!");
-
-	// --- PID SETUP ---
-	pitchSetpoint = 0; // Target is level
-	rollSetpoint = 0;  // Target is level
-
-	pitchPID.SetMode(AUTOMATIC);
-	rollPID.SetMode(AUTOMATIC);
-
-	// Limits: Don't let PID take over 100% of the motor power
-	pitchPID.SetOutputLimits(-100, 100);
-	rollPID.SetOutputLimits(-100, 100);
-
-	// Fast update rate for drone (10ms = 100Hz)
-	pitchPID.SetSampleTime(10);
-	rollPID.SetSampleTime(10);
+	LoopTimer = micros();
 }
-long lastdebug = 0;
+
 void loop() {
-	if (Serial.available()) {
-		char cmd = Serial.read();
-		if (cmd == 'w') baseThrottle += 10;
-		if (cmd == 's') baseThrottle -= 10;
-		if (cmd == 'x') baseThrottle = 0;
-		baseThrottle = constrain(baseThrottle, 0, 255);  // QX95 safe max
-		Serial.print("Throttle: "); Serial.println(baseThrottle);
+	// 1. READ GYRO
+	gyro_signals();
+	RateRoll -= RateCalibrationRoll;
+	RatePitch -= RateCalibrationPitch;
+	RateYaw -= RateCalibrationYaw;
+
+	// Complementary Filter
+	complementaryAngleRoll = 0.991 * (complementaryAngleRoll + RateRoll * t) + 0.009 * AngleRoll;
+	complementaryAnglePitch = 0.991 * (complementaryAnglePitch + RatePitch * t) + 0.009 * AnglePitch;
+
+	// 2. READ WIFI (FLUTTER)
+	int packetSize = udp.parsePacket();
+	if (packetSize) {
+		int len = udp.read(packetBuffer, 255);
+		if (len > 0) {
+			packetBuffer[len] = 0;
+			char *ptr = strtok(packetBuffer, ",");
+			if (ptr) {
+				int rawThrottle = atoi(ptr);
+				// Map throttle to 0-255 range
+				InputThrottle = map(rawThrottle, 0, 1023, 0, 255);
+
+				ptr = strtok(NULL, ",");
+				int rawPitch = atoi(ptr);
+				// Map -100..100 input to -30..30 degrees angle
+				DesiredAnglePitch = map(rawPitch, -100, 100, -30, 30);
+
+				ptr = strtok(NULL, ",");
+				int rawRoll = atoi(ptr);
+				DesiredAngleRoll = map(rawRoll, -100, 100, -30, 30);
+
+				lastPacketTime = millis();
+			}
+		}
 	}
-	// 1. Get Angles
-	float pitch = myMPU9250.getPitch();
-	float roll = myMPU9250.getRoll();
 
-	// 2. Safety Cutoff (Crash protection)
-	// If tilted > 45 degrees, shut down
-	if (abs(pitch) > 45 || abs(roll) > 45) {
-		writeMotors(0, 0, 0, 0);
-		Serial.println("EMERGENCY STOP: TILT > 45");
-		return;
+	// Safety: If no WiFi signal for 1 sec, kill motors
+	if (millis() - lastPacketTime > 1000) {
+		InputThrottle = 0;
+		DesiredAnglePitch = 0;
+		DesiredAngleRoll = 0;
 	}
 
-	// 3. Update PID
-	pitchInput = pitch;
-	rollInput = roll;
+	// ================= PID CALCULATIONS =================
 
-	pitchPID.Compute();
-	rollPID.Compute();
+	// --- ROLL PID ---
+	ErrorAngleRoll = DesiredAngleRoll - complementaryAngleRoll;
+	float PtermRoll = PAngleRoll * ErrorAngleRoll;
+	float ItermRoll = PrevItermAngleRoll + (IAngleRoll * (ErrorAngleRoll + PrevErrorAngleRoll) * (t / 2));
+	ItermRoll = constrain(ItermRoll, -100, 100);
+	float DtermRoll = DAngleRoll * ((ErrorAngleRoll - PrevErrorAngleRoll) / t);
+	float PIDOutputRoll = PtermRoll + ItermRoll + DtermRoll;
+	float DesiredRateRoll = PIDOutputRoll;
+	PrevErrorAngleRoll = ErrorAngleRoll;
+	PrevItermAngleRoll = ItermRoll;
 
+	ErrorRateRoll = DesiredRateRoll - RateRoll;
+	PtermRoll = PRateRoll * ErrorRateRoll;
+	ItermRoll = PrevItermRateRoll + (IRateRoll * (ErrorRateRoll + PrevErrorRateRoll) * (t / 2));
+	ItermRoll = constrain(ItermRoll, -100, 100);
+	DtermRoll = DRateRoll * ((ErrorRateRoll - PrevErrorRateRoll) / t);
+	InputRoll = PtermRoll + ItermRoll + DtermRoll;
+	PrevErrorRateRoll = ErrorRateRoll;
+	PrevItermRateRoll = ItermRoll;
 
+	// --- PITCH PID ---
+	ErrorAnglePitch = DesiredAnglePitch - complementaryAnglePitch;
+	float PtermPitch = PAnglePitch * ErrorAnglePitch;
+	float ItermPitch = PrevItermAnglePitch + (IAnglePitch * (ErrorAnglePitch + PrevErrorAnglePitch) * (t / 2));
+	ItermPitch = constrain(ItermPitch, -100, 100);
+	float DtermPitch = DAnglePitch * ((ErrorAnglePitch - PrevErrorAnglePitch) / t);
+	float PIDOutputPitch = PtermPitch + ItermPitch + DtermPitch;
+	float DesiredRatePitch = PIDOutputPitch;
+	PrevErrorAnglePitch = ErrorAnglePitch;
+	PrevItermAnglePitch = ItermPitch;
 
-	// FL: Front (Boost) + Left (Drop)
-	int pwm_FL = baseThrottle - pitchOutput + rollOutput;
+	ErrorRatePitch = DesiredRatePitch - RatePitch;
+	PtermPitch = PRatePitch * ErrorRatePitch;
+	ItermPitch = PrevItermRatePitch + (IRatePitch * (ErrorRatePitch + PrevErrorRatePitch) * (t / 2));
+	ItermPitch = constrain(ItermPitch, -100, 100);
+	DtermPitch = DRatePitch * ((ErrorRatePitch - PrevErrorRatePitch) / t);
+	InputPitch = PtermPitch + ItermPitch + DtermPitch;
+	PrevErrorRatePitch = ErrorRatePitch;
+	PrevItermRatePitch = ItermPitch;
 
-	// FR: Front (Boost) + Right (Boost)
-	int pwm_FR = baseThrottle - pitchOutput - rollOutput;
+	// ================= MOTOR MIXING =================
+	// Only mix if throttle is active
+	if (InputThrottle > 20) {
+		int m1 = InputThrottle - InputRoll - InputPitch; // FR
+		int m2 = InputThrottle + InputRoll - InputPitch; // FL
+		int m3 = InputThrottle + InputRoll + InputPitch; // BL
+		int m4 = InputThrottle - InputRoll + InputPitch; // BR
 
-	// BL: Back (Drop) + Left (Drop)
-	int pwm_BL = baseThrottle + pitchOutput + rollOutput;
-
-	// BR: Back (Drop) + Right (Boost)
-	int pwm_BR = baseThrottle + pitchOutput - rollOutput;
-
-	// 5. Constraints
-	pwm_FL = constrain(pwm_FL, 0, 255);
-	pwm_FR = constrain(pwm_FR, 0, 255);
-	pwm_BL = constrain(pwm_BL, 0, 255);
-	pwm_BR = constrain(pwm_BR, 0, 255);
-
-	// 6. Actuate Motors
-	// Only spin if we have throttle (safety)
-	if (baseThrottle > 10) {
-		writeMotors(pwm_FL, pwm_FR, pwm_BL, pwm_BR);
+		writeMotors(m2, m1, m3, m4);
 	}
 	else {
 		writeMotors(0, 0, 0, 0);
+		// Reset I-Terms to prevent "windup" on ground
+		PrevItermAngleRoll = 0; PrevItermAnglePitch = 0;
+		PrevItermRateRoll = 0; PrevItermRatePitch = 0;
 	}
-	if (millis() - lastdebug > 500) {
-		lastdebug = millis();
-		// Optional Debugging
-		Serial.print("P:"); Serial.print(pitch);
-		Serial.print(" R:"); Serial.print(roll);
-		Serial.print(" FL:"); Serial.println(pwm_FL);
-		Serial.print(" FR:"); Serial.println(pwm_FR);
-		Serial.print(" BL:"); Serial.println(pwm_BL);
-		Serial.print(" BR:"); Serial.println(pwm_BR);
-	}
+
+	// ================= LOOP TIMING (250Hz) =================
+	while (micros() - LoopTimer < (t * 1000000));
+	LoopTimer = micros();
 }
